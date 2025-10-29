@@ -1,67 +1,121 @@
-import * as React from 'react';
-import { Toolbar, ToolbarButton, DataGrid } from "@mui/x-data-grid";
-import { Box, Menu, MenuItem, Select, TextField, IconButton } from "@mui/material";
-import ClearIcon from "@mui/icons-material/Clear";
-import AddIcon from "@mui/icons-material/Add";
-import FormControl from "@mui/material/FormControl";
-import InputLabel from "@mui/material/InputLabel";
-import Tooltip from "@mui/material/Tooltip";
-import Popper from "@mui/material/Popper";
-import Paper from "@mui/material/Paper";
-import ClickAwayListener from "@mui/material/ClickAwayListener";
-import FilterListIcon from "@mui/icons-material/FilterList";
-import Stack from "@mui/material/Stack";
-import Chip from "@mui/material/Chip";
-import FileDownloadIcon from "@mui/icons-material/FileDownload";
-import { FETCH_MODE, FilterPayload, FilterPayloadDef, CustomDataGridDef } from "./types";
+import * as React from "react";
+import { DataGrid } from "@mui/x-data-grid";
+import {
+  FETCH_MODE,
+  FilterPayload,
+  FilterPayloadDef,
+  CustomDataGridDef,
+} from "./types";
+import XtendedMuiGridToolbar from "./XtendedMuiGridToolbar";
+import XtendedMuiGridPaginationControls from "./XtendedMuiGridPaginationControls";
+import XtendedMuiGridRowMenu from "./XtendedMuiGridRowMenu";
 
 function XtendedMuiGrid(props: CustomDataGridDef) {
+  // Destructure props
   const {
     columns,
-    defaultFilter,
-    handleFilterChange,
-    gridData,
-    handleExport,
-    csvExportUrl,
-    excelExportUrl,
-    exportFileName,
-    fetchMode = FETCH_MODE.GET,
+    defaultFilter, // Initial filters to apply on load
+    handleFilterChange, // Callback to parent to fetch data
+    gridData, // The data object from the parent (e.g., { data: [], total: 0 })
+    handleExport, // Optional custom export handler
+    filterMap, // A map to define dropdown values for certain filters
+    csvExportUrl, // API endpoint for CSV export
+    excelExportUrl, // API endpoint for Excel export
+    exportFileName, // Base name for exported files
+    externalLoading, // Prop to show loading from parent
+    getRowId, // Function to get a unique row ID
+    renderRowMenu, // Function to render a custom row context menu
+    fetchMode = FETCH_MODE.GET, // API request method (GET or POST)
   } = props;
 
-  const [sortModel, setSortModel] = React.useState<{ field: string; sort: "asc" | "desc" }[]>([{ field: "dateCreated", sort: "desc" }]);
+  // ---
+  // STATE
+  // ---
+
+  // Stores the current sort configuration (field and direction)
+  const [sortModel, setSortModel] = React.useState<
+    { field: string; sort: "asc" | "desc" }[]
+  >([{ field: "createdAt", sort: "desc" }]);
+
+  // Stores the current pagination state (page index and size)
   const [pagination, setPagination] = React.useState({
-    pageSize: 50,
+    pageSize: 10,
     page: 0,
   });
+
+  // Manages the loading state of the grid, distinct from externalLoading
   const [isLoading, setIsLoading] = React.useState<boolean>(true);
-  const [filterModel, setFilterModel] = React.useState<any>({ items: defaultFilter });
 
-  const debounceTimeout = React.useRef<any>(null);
+  // Stores the value of the "Go to Page" input field
+  const [jumpPage, setJumpPage] = React.useState<string>();
 
+  // Stores the total number of pages, calculated from gridData.total
+  const [pageCount, setPageCount] = React.useState<number>();
+
+  // Stores the *active* filter configuration applied to the grid
+  const [filterModel, setFilterModel] = React.useState<any>({
+    items: defaultFilter,
+  });
+
+  // Options for the "Rows per page" dropdown
+  const pageSizeOptions = [
+    { value: 10, label: "10" },
+    { value: 25, label: "25" },
+    { value: 100, label: "100" },
+    // Add an "All" option if total count is available
+    ...(gridData?.total ? [{ value: gridData.total, label: "All" }] : []),
+  ];
+
+  // ---
+  // CORE HANDLERS
+  // ---
+
+  /**
+   * Handles the custom 'onFilterChange' event dispatched from the CustomToolbar.
+   * Updates the main `filterModel` state, which triggers the data fetching useEffect.
+   */
   const handleFilterModelChange = (e: any) => {
     if (!e.detail) return;
     const newFilterModel = e.detail;
     if (JSON.stringify(newFilterModel) !== JSON.stringify(filterModel)) {
       setFilterModel(newFilterModel);
     }
+    // Reset to first page when filters change
+    setPagination({
+      page: newFilterModel.page || 0,
+      pageSize: newFilterModel.pageSize || 10,
+    });
   };
 
+  /**
+   * Called by DataGrid when the user clicks a column header to sort.
+   * Updates the `sortModel` state, which triggers the data fetching useEffect.
+   */
   const handleSortModelChange = (newSortModel: any) => {
     if (JSON.stringify(newSortModel) !== JSON.stringify(sortModel)) {
       setSortModel(newSortModel);
     }
   };
 
-  const handlePaginationChange = (newPagination: { page: number; pageSize: number }) => {
-    setPagination((prevState) => {
-      return {
-        ...prevState,
-        page: newPagination.page,
-        pageSize: newPagination.pageSize,
-      };
+  /**
+   * Called by DataGrid when the user changes the page or page size.
+   * Updates the `pagination` state, which triggers the data fetching useEffect.
+   */
+  const handlePaginationChange = (newPagination: {
+    page: number;
+    pageSize: number;
+  }) => {
+    setPagination({
+      page: newPagination.page,
+      pageSize: newPagination.pageSize,
     });
   };
 
+  /**
+   * Helper function to dispatch a custom browser event.
+   * This is used by the CustomToolbar to communicate filter changes
+   * back to the main XtendedMuiGrid component.
+   */
   const emitOnFilterModelChange = (filterModel: any) => {
     const event = new CustomEvent("onFilterChange", {
       detail: filterModel,
@@ -69,59 +123,76 @@ function XtendedMuiGrid(props: CustomDataGridDef) {
     window.dispatchEvent(event);
   };
 
+  // ---
+  // PAYLOAD BUILDERS
+  // ---
+
+  /**
+   * Helper to build URLSearchParams for GET requests.
+   */
   const buildParams = (payload: FilterPayload): URLSearchParams => {
     const params = new URLSearchParams();
-
     if (payload.filter) {
       params.append("filter", JSON.stringify(payload.filter));
     }
-
     if (payload.sort) {
       params.append("sort", JSON.stringify(payload.sort));
     }
-
     if (payload.limit !== undefined) {
       params.append("limit", String(payload.limit));
     }
-
-    if (payload.offset !== undefined) {
+    if (payload.offset !== undefined && !isNaN(payload.offset)) {
       params.append("offset", String(payload.offset));
     }
-
+    // Append any other custom keys
     Object.keys(payload).forEach((key) => {
       if (!["filter", "sort", "limit", "offset"].includes(key)) {
         params.append(key, String(payload[key]));
       }
     });
-
     return params;
   };
 
+  /**
+   * Gathers the current state (filters, sorting, pagination) and builds
+   * the payload for the API request.
+   * @returns {FilterPayloadDef} Either a URLSearchParams object (for GET) or a JSON object (for POST).
+   */
   const retrievePayload = (): FilterPayloadDef => {
-    let reqPayload = null;
+    let reqPayload: any = null;
+    const offset = pagination.page * pagination.pageSize;
+    const commonPayload = {
+      filter: filterModel,
+      sort: sortModel,
+      limit: pagination.pageSize || 10,
+      offset: isNaN(offset) ? 0 : offset,
+    };
+
     if (fetchMode === FETCH_MODE.GET) {
-      reqPayload = buildParams({
-        filter: filterModel,
-        sort: sortModel,
-        limit: pagination.pageSize || 10,
-        offset: pagination.page || 0,
-      });
+      reqPayload = buildParams(commonPayload);
+      return reqPayload;
     } else {
-      reqPayload = {
-        filter: filterModel,
-        sort: sortModel,
-        limit: pagination.pageSize || 10,
-        offset: pagination.page || 0,
-      };
+      reqPayload = commonPayload;
     }
     return reqPayload;
   };
 
+  // ---
+  // DATA FETCHING & LIFECYCLE
+  // ---
+
+  /**
+   * This is the MAIN data fetching trigger.
+   * It watches for changes in pagination, sorting, or filtering.
+   * When a change occurs, it builds the API payload and calls the
+   * `handleFilterChange` prop, delegating the actual API call to the parent.
+   */
   React.useEffect(() => {
     const fetchData = async () => {
       try {
         setIsLoading(true);
         let reqPayload = retrievePayload();
+        // Call the parent's function to fetch data
         handleFilterChange(reqPayload);
       } catch (err) {
         console.error("Error fetching data:", err);
@@ -129,256 +200,127 @@ function XtendedMuiGrid(props: CustomDataGridDef) {
         setIsLoading(false);
       }
     };
-
     fetchData();
-  }, [pagination, sortModel, filterModel]);
+  }, [pagination, sortModel, filterModel]); // Dependency array
 
+  /**
+   * Effect to set up the global event listener for filter changes
+   * from the CustomToolbar.
+   */
   React.useEffect(() => {
     window.addEventListener("onFilterChange", handleFilterModelChange);
-    return () => window.removeEventListener("onFilterChange", handleFilterModelChange);
-  }, []);
+    return () =>
+      window.removeEventListener("onFilterChange", handleFilterModelChange);
+  }, []); // Runs once on mount
 
-  const operators = ["equals", "contains", ">", "<"];
-
-  // add a new filter row
-  const addFilter = () => {
-    setFilterModel((prev: any) => ({
-      ...prev,
-      items: [
-        ...prev.items,
-        { field: columns.filter((item) => !prev.items.includes(item.field))[0]?.field || defaultFilter[0].field, operator: "contains", value: "" },
-      ],
-    }));
-  };
-
-  // update a filter row
-  const updateFilter = (index: number, key: string, value: any) => {
-    const items = filterModel.items.map((item: any) => ({ ...item }));
-    if (!items[index]) {
-      items[index] = { field: "", operator: "contains", value: "" };
-      (items[index] as any)[key] = value;
-    } else {
-      (items[index] as any)[key] = value;
-    }
-
-    // 🔹 Clear the previous timer
-    if (debounceTimeout.current) {
-      clearTimeout(debounceTimeout.current);
-    }
-
-    // 🔹 Set a new timer
-    debounceTimeout.current = setTimeout(() => {
-      emitOnFilterModelChange({ ...filterModel, items });
-    }, 800);
-  };
-
-  const updateLinkingOperator = (e: any) => {
-    if (!e.target || !e.target.value) return;
-    const newOperator = e.target.value.toLowerCase();
-    // 🔹 Clear the previous timer
-    if (debounceTimeout.current) {
-      clearTimeout(debounceTimeout.current);
-    }
-
-    // 🔹 Set a new timer
-    debounceTimeout.current = setTimeout(() => {
-      emitOnFilterModelChange({ ...filterModel, logicOperator: newOperator });
-    }, 100);
-  };
-
-  // remove a filter row
-  const removeFilter = (index: number) => {
-    setFilterModel((prev: any) => {
-      const items = prev.items.filter((item: any, i: number) => item && i !== index);
-      return { ...prev, items };
-    });
-  };
-
-  const CustomToolbar = () => {
-    const [newPanelOpen, setNewPanelOpen] = React.useState(false);
-    const [open, setOpen] = React.useState(false);
-    const newPanelTriggerRef = React.useRef<HTMLButtonElement>(null);
-    const exportTriggerRef = React.useRef<HTMLButtonElement>(null);
-    const handleClose = () => {
-      setNewPanelOpen(false);
-    };
-
-    const handleKeyDown = (event: React.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        handleClose();
-      }
-    };
-
-    const exportMenuClick = async (fileType: "csv" | "excel") => {
-      if (!handleExport && !excelExportUrl && !csvExportUrl) {
-        console.error("No 'Export' handler specified.");
-        return;
-      } else if ((!handleExport && excelExportUrl) || csvExportUrl) {
-        const exportLink = fileType === "csv" ? csvExportUrl : excelExportUrl;
-        if (!exportLink) {
-          console.error("Export URL is not defined");
-          return;
-        }
-        const response = await fetch(exportLink);
-        const blob = await response.blob();
-
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(blob);
-        const ext = fileType === "csv" ? "csv" : "xlsx";
-        link.download = `${exportFileName || "my-data"}.${ext}`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } else if ((handleExport && excelExportUrl) || csvExportUrl) {
-        console.error("Can not set both 'handleExport' and 'exportApiUrl' props.");
-      } else if (handleExport) {
-        let reqPayload = retrievePayload();
-        handleExport(reqPayload, fileType);
-      }
-    };
-
-    return (
-      <Toolbar>
-        <Tooltip title="Export">
-          <ToolbarButton ref={exportTriggerRef} aria-describedby="new-panel" onClick={() => setOpen((prev) => !prev)}>
-            <FileDownloadIcon fontSize="small" />
-          </ToolbarButton>
-        </Tooltip>
-        <Menu
-          id="export-menu"
-          anchorEl={exportTriggerRef.current}
-          open={open}
-          onClose={() => setOpen(false)}
-          anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-          transformOrigin={{ vertical: "top", horizontal: "left" }}
-        >
-          <MenuItem onClick={() => exportMenuClick("csv")}>Download as CSV</MenuItem>
-          <MenuItem onClick={() => exportMenuClick("excel")}>Download as Excel</MenuItem>
-        </Menu>
-
-        <Tooltip title="Filters">
-          <ToolbarButton ref={newPanelTriggerRef} aria-describedby="new-panel" onClick={() => setNewPanelOpen((prev) => !prev)}>
-            <FilterListIcon fontSize="small" />
-          </ToolbarButton>
-        </Tooltip>
-
-        <Popper open={newPanelOpen} anchorEl={newPanelTriggerRef.current} placement="bottom-end" id="new-panel" onKeyDown={handleKeyDown}>
-          <ClickAwayListener onClickAway={handleClose}>
-            <Paper
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 2,
-                p: 2,
-                width: 600,
-              }}
-              elevation={8}
-            >
-              {(filterModel.items && filterModel.items?.length ? filterModel.items : defaultFilter).map((item: any, index: number) => (
-                <Box key={index} sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-                  {/* Delete button */}
-                  <IconButton size="small" color="error" disabled={index <= 0} onClick={() => removeFilter(index)}>
-                    <ClearIcon fontSize="small" />
-                  </IconButton>
-
-                  {/*Linking operator */}
-                  {filterModel.items?.length > 1 ? (
-                    <Select
-                      label="Linking Operator"
-                      size="small"
-                      defaultValue={"And"}
-                      onChange={updateLinkingOperator}
-                      sx={{ visibility: index > 0 ? "visible" : "hidden", minWidth: 80 }}
-                      disabled={filterModel.items?.length <= 1}
-                    >
-                      {["And", "Or"].map((op, id) => (
-                        <MenuItem key={id} value={op}>
-                          {op}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  ) : (
-                    <></>
-                  )}
-
-                  {/* Field */}
-                  <FormControl sx={{ m: 1, minWidth: 150, textAlign: "left" }} size="small">
-                    <InputLabel id="column-select">Column</InputLabel>
-                    <Select labelId="column-select" value={item.field} label="Column" onChange={(e) => updateFilter(index, "field", e.target.value)}>
-                      {columns?.length ? (
-                        columns.map((column) => (
-                          <MenuItem key={column.field} value={column.field}>
-                            {column.headerName}
-                          </MenuItem>
-                        ))
-                      ) : (
-                        <MenuItem value="">No columns available</MenuItem>
-                      )}
-                    </Select>
-                  </FormControl>
-
-                  {/* Operator */}
-                  <Select
-                    label="operator"
-                    size="small"
-                    defaultValue={item.operator}
-                    onChange={(e) => updateFilter(index, "operator", e.target.value)}
-                  >
-                    {operators.map((op) => (
-                      <MenuItem key={op} value={op}>
-                        {op}
-                      </MenuItem>
-                    ))}
-                  </Select>
-
-                  {/* Value */}
-                  <TextField
-                    label="Value"
-                    size="small"
-                    defaultValue={item.value ?? ""}
-                    onChange={(e) => updateFilter(index, "value", e.target.value)}
-                  />
-                  <IconButton size="small" color="primary" onClick={addFilter} sx={{ width: 50, mr: 2, ml: 2 }}>
-                    <AddIcon fontSize="small" />
-                  </IconButton>
-                </Box>
-              ))}
-            </Paper>
-          </ClickAwayListener>
-        </Popper>
-
-        <Stack direction="row" sx={{ gap: 0.5, flex: 1, pl: 2 }}>
-          {filterModel?.items.map((filter: any, id: number) => {
-            if (!filter.field || !filter.value) return null;
-            const column = columns[filter.field];
-            const field = column?.headerName ?? filter.field;
-            return <Chip key={filter.id} label={`${field}`} onDelete={() => removeFilter(id)} sx={{ mx: 0.25 }} />;
-          })}
-        </Stack>
-      </Toolbar>
+  /**
+   * Effect to recalculate the total page count whenever the
+   * grid data or page size changes.
+   */
+  React.useEffect(() => {
+    setPageCount(
+      gridData && gridData.total && pagination.pageSize
+        ? Math.ceil(gridData.total / pagination.pageSize)
+        : 0
     );
+  }, [gridData?.total, pagination.pageSize]);
+
+  // State for the row context menu anchor
+  const [rowMenuAnchor, setRowMenuAnchor] = React.useState<null | HTMLElement>(
+    null
+  );
+  // State to store the data of the clicked row
+  const [rowMenuData, setRowMenuData] = React.useState<any>(null);
+  /**
+   * Opens the row context menu on (left) click.
+   */
+  const handleRowClickMenu = (params: any, event: React.MouseEvent) => {
+    if (event.button === 0) {
+      setRowMenuAnchor(event.target as HTMLElement);
+      setRowMenuData(params.row);
+    }
   };
+
+  /**
+   * Closes the row context menu.
+   */
+  const handleCloseRowMenu = () => {
+    setRowMenuAnchor(null);
+    setRowMenuData(null);
+  };
+
+  // ---
+  // MAIN RENDER
+  // ---
 
   return (
-    <DataGrid
-      rows={isLoading ? [] : gridData?.data}
-      getRowId={(row) => row._id}
-      columns={columns}
-      rowCount={gridData.total || 0}
-      pagination
-      paginationModel={pagination}
-      onSortModelChange={handleSortModelChange}
-      onPaginationModelChange={handlePaginationChange}
-      filterMode="server"
-      sortingMode="server"
-      paginationMode="server"
-      loading={isLoading}
-      slots={{ toolbar: CustomToolbar }}
-      showToolbar
-      disableColumnMenu={true}
-      checkboxSelection
-      pageSizeOptions={[10, 25, 50, 100]}
-    />
+    <>
+      <DataGrid
+        // Data and columns
+        rows={isLoading ? [] : gridData?.data}
+        getRowId={getRowId}
+        columns={columns}
+        // Server-side props
+        rowCount={gridData.total || 0}
+        filterMode="server"
+        sortingMode="server"
+        paginationMode="server"
+        // Pagination state
+        pagination
+        paginationModel={pagination}
+        onPaginationModelChange={handlePaginationChange}
+        pageSizeOptions={pageSizeOptions}
+        // Sort state
+        onSortModelChange={handleSortModelChange}
+        // Loading state
+        loading={isLoading}
+        // Toolbar
+        slots={{
+          toolbar: () => (
+            <XtendedMuiGridToolbar
+              columns={columns}
+              filterMap={filterMap}
+              csvExportUrl={csvExportUrl}
+              excelExportUrl={excelExportUrl}
+              exportFileName={exportFileName}
+              handleExport={handleExport}
+              externalLoading={externalLoading}
+              filterModel={filterModel}
+              setFilterModel={setFilterModel}
+              emitOnFilterModelChange={emitOnFilterModelChange}
+              retrievePayload={retrievePayload}
+              defaultFilter={defaultFilter}
+              fetchMode={fetchMode}
+            />
+          ),
+        }}
+        showToolbar
+        // Row menu handlers
+        onRowClick={handleRowClickMenu}
+        onRowDoubleClick={(params, event) => {
+          // Prevent default MUI behavior on double click if needed
+          event.defaultMuiPrevented = true;
+        }}
+        // Other options
+        disableRowSelectionOnClick
+        disableColumnMenu={true}
+      />
+
+      {/* "Go to Page" Input Box */}
+      <XtendedMuiGridPaginationControls
+        pagination={pagination}
+        setPagination={setPagination}
+        pageCount={pageCount}
+      />
+
+      {/* Row Context Menu (renders if renderRowMenu prop is provided) */}
+      <XtendedMuiGridRowMenu
+        renderRowMenu={renderRowMenu}
+        rowMenuAnchor={rowMenuAnchor}
+        rowMenuData={rowMenuData}
+        handleCloseRowMenu={handleCloseRowMenu}
+      />
+    </>
   );
 }
 
