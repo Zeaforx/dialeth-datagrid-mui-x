@@ -1,6 +1,5 @@
-import type { GridColDef } from "@mui/x-data-grid";
+import type { GridColDef as MuiGridColDef } from "@mui/x-data-grid";
 import { JSX } from "react/jsx-runtime";
-
 export const FETCH_MODE = {
   GET: "get",
 
@@ -34,7 +33,7 @@ export type FilterPayload = {
 export type FilterPayloadDef = FilterPayload | URLSearchParams;
 
 export type CustomDataGridDef = {
-  columns: GridColDef[];
+  columns: MuiGridColDef[];
 
   externalLoading?: Boolean;
 
